@@ -1,0 +1,328 @@
+"""
+GeneCompare - Simple Comparative Genomics Web App
+
+A beginner-friendly Streamlit app that:
+1. Takes a gene name and multiple species names from the user
+2. Searches NCBI nucleotide database
+3. Fetches DNA sequences using Biopython Entrez
+4. Translates DNA sequences into protein sequences
+5. Compares protein sequences using pairwise alignment
+6. Displays a similarity matrix and heatmap
+
+Author: Nima Namvar Tehrani
+"""
+
+import os
+from typing import Dict, List, Tuple
+
+import pandas as pd
+import streamlit as st
+import matplotlib.pyplot as plt
+
+from Bio import Entrez, SeqIO, pairwise2
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+
+
+# -----------------------------
+# App Configuration
+# -----------------------------
+
+st.set_page_config(
+    page_title="GeneCompare",
+    page_icon="🧬",
+    layout="wide"
+)
+
+
+# -----------------------------
+# Helper Functions
+# -----------------------------
+
+def set_entrez_email(email: str) -> None:
+    """
+    Set the email required by NCBI Entrez.
+    NCBI requires users to provide an email address when using Entrez.
+    """
+    Entrez.email = email
+
+
+def search_ncbi_sequence(gene_name: str, species_name: str) -> str | None:
+    """
+    Search NCBI nucleotide database for a gene sequence.
+
+    Returns the first matching NCBI record ID, or None if no result is found.
+    """
+    query = f"{gene_name}[Gene] AND {species_name}[Organism] AND biomol_genomic[PROP]"
+
+    try:
+        handle = Entrez.esearch(
+            db="nucleotide",
+            term=query,
+            retmax=1
+        )
+        result = Entrez.read(handle)
+        handle.close()
+
+        if result["IdList"]:
+            return result["IdList"][0]
+
+        return None
+
+    except Exception as error:
+        st.warning(f"Search failed for {species_name}: {error}")
+        return None
+
+
+def fetch_sequence(record_id: str) -> SeqRecord | None:
+    """
+    Fetch a DNA sequence from NCBI using a nucleotide record ID.
+    """
+    try:
+        handle = Entrez.efetch(
+            db="nucleotide",
+            id=record_id,
+            rettype="fasta",
+            retmode="text"
+        )
+        record = SeqIO.read(handle, "fasta")
+        handle.close()
+        return record
+
+    except Exception as error:
+        st.warning(f"Could not fetch sequence {record_id}: {error}")
+        return None
+
+
+def clean_dna_sequence(sequence: Seq) -> Seq:
+    """
+    Clean DNA sequence by removing incomplete codons.
+    Translation works best when sequence length is divisible by 3.
+    """
+    sequence_length = len(sequence)
+    usable_length = sequence_length - (sequence_length % 3)
+    return sequence[:usable_length]
+
+
+def translate_dna_to_protein(dna_sequence: Seq) -> Seq:
+    """
+    Translate DNA sequence into protein sequence.
+    Stop codons are represented as '*'.
+    """
+    cleaned_sequence = clean_dna_sequence(dna_sequence)
+    protein_sequence = cleaned_sequence.translate(to_stop=False)
+    return protein_sequence
+
+
+def calculate_similarity(seq1: Seq, seq2: Seq) -> float:
+    """
+    Calculate similarity percentage between two protein sequences.
+
+    This uses a simple global alignment and calculates:
+    similarity = number of matching positions / alignment length * 100
+    """
+    alignments = pairwise2.align.globalxx(seq1, seq2, one_alignment_only=True)
+
+    if not alignments:
+        return 0.0
+
+    aligned_seq1, aligned_seq2, score, start, end = alignments[0]
+
+    matches = 0
+    alignment_length = len(aligned_seq1)
+
+    for amino_acid_1, amino_acid_2 in zip(aligned_seq1, aligned_seq2):
+        if amino_acid_1 == amino_acid_2:
+            matches += 1
+
+    if alignment_length == 0:
+        return 0.0
+
+    similarity = (matches / alignment_length) * 100
+    return round(similarity, 2)
+
+
+def build_similarity_matrix(protein_sequences: Dict[str, Seq]) -> pd.DataFrame:
+    """
+    Build a similarity matrix comparing all protein sequences.
+    """
+    species = list(protein_sequences.keys())
+    matrix = pd.DataFrame(index=species, columns=species, dtype=float)
+
+    for species_1 in species:
+        for species_2 in species:
+            similarity = calculate_similarity(
+                protein_sequences[species_1],
+                protein_sequences[species_2]
+            )
+            matrix.loc[species_1, species_2] = similarity
+
+    return matrix
+
+
+def plot_heatmap(similarity_matrix: pd.DataFrame) -> None:
+    """
+    Display a heatmap of the similarity matrix using matplotlib.
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+    image = ax.imshow(similarity_matrix.values.astype(float))
+
+    ax.set_xticks(range(len(similarity_matrix.columns)))
+    ax.set_yticks(range(len(similarity_matrix.index)))
+    ax.set_xticklabels(similarity_matrix.columns, rotation=45, ha="right")
+    ax.set_yticklabels(similarity_matrix.index)
+
+    for i in range(len(similarity_matrix.index)):
+        for j in range(len(similarity_matrix.columns)):
+            value = similarity_matrix.iloc[i, j]
+            ax.text(j, i, f"{value:.1f}%", ha="center", va="center")
+
+    ax.set_title("Protein Sequence Similarity Matrix")
+    fig.colorbar(image, ax=ax, label="Similarity (%)")
+    st.pyplot(fig)
+
+
+# -----------------------------
+# Streamlit User Interface
+# -----------------------------
+
+st.title("🧬 GeneCompare")
+st.subheader("A simple comparative genomics web application")
+
+st.write(
+    "GeneCompare retrieves gene sequences from NCBI, translates DNA into protein, "
+    "and compares protein similarity across species."
+)
+
+with st.sidebar:
+    st.header("Input Settings")
+
+    user_email = st.text_input(
+        "Your email for NCBI Entrez",
+        placeholder="your.email@example.com"
+    )
+
+    gene_name = st.text_input(
+        "Gene name",
+        value="HBB",
+        help="Example: HBB, BRCA1, COX1"
+    )
+
+    species_input = st.text_area(
+        "Species list, one per line",
+        value="Homo sapiens\nPan troglodytes\nMus musculus",
+        help="Write one species name per line"
+    )
+
+    run_button = st.button("Run comparison")
+
+
+if run_button:
+    if not user_email:
+        st.error("Please enter your email address for NCBI Entrez.")
+        st.stop()
+
+    if not gene_name:
+        st.error("Please enter a gene name.")
+        st.stop()
+
+    species_list = [species.strip() for species in species_input.splitlines() if species.strip()]
+
+    if len(species_list) < 2:
+        st.error("Please enter at least two species.")
+        st.stop()
+
+    set_entrez_email(user_email)
+
+    dna_records: Dict[str, SeqRecord] = {}
+    protein_sequences: Dict[str, Seq] = {}
+
+    st.header("1. Fetching sequences from NCBI")
+
+    progress_bar = st.progress(0)
+
+    for index, species in enumerate(species_list):
+        st.write(f"Searching for **{gene_name}** in **{species}**...")
+
+        record_id = search_ncbi_sequence(gene_name, species)
+
+        if record_id is None:
+            st.warning(f"No sequence found for {species}.")
+            continue
+
+        record = fetch_sequence(record_id)
+
+        if record is None:
+            continue
+
+        dna_records[species] = record
+        protein_sequences[species] = translate_dna_to_protein(record.seq)
+
+        progress_bar.progress((index + 1) / len(species_list))
+
+    if len(protein_sequences) < 2:
+        st.error("Could not retrieve enough sequences for comparison.")
+        st.stop()
+
+    st.success(f"Successfully retrieved {len(protein_sequences)} sequences.")
+
+    st.header("2. Retrieved DNA sequences")
+
+    sequence_summary = []
+    for species, record in dna_records.items():
+        sequence_summary.append({
+            "Species": species,
+            "NCBI Record ID": record.id,
+            "DNA Length": len(record.seq),
+            "Protein Length": len(protein_sequences[species])
+        })
+
+    summary_df = pd.DataFrame(sequence_summary)
+    st.dataframe(summary_df, use_container_width=True)
+
+    with st.expander("Show sequence previews"):
+        for species, record in dna_records.items():
+            st.markdown(f"### {species}")
+            st.text(f"DNA preview: {str(record.seq[:300])}...")
+            st.text(f"Protein preview: {str(protein_sequences[species][:150])}...")
+
+    st.header("3. Protein similarity matrix")
+
+    similarity_matrix = build_similarity_matrix(protein_sequences)
+    st.dataframe(similarity_matrix, use_container_width=True)
+
+    st.header("4. Heatmap visualization")
+    plot_heatmap(similarity_matrix)
+
+    st.header("5. Download results")
+
+    csv_data = similarity_matrix.to_csv().encode("utf-8")
+
+    st.download_button(
+        label="Download similarity matrix as CSV",
+        data=csv_data,
+        file_name=f"{gene_name}_similarity_matrix.csv",
+        mime="text/csv"
+    )
+
+else:
+    st.info("Enter a gene name and species list, then click 'Run comparison'.")
+
+    st.markdown(
+        """
+        ### Example input
+        **Gene:** HBB  
+        **Species:**
+        - Homo sapiens
+        - Pan troglodytes
+        - Mus musculus
+
+        ### What this app demonstrates
+        - Python programming
+        - API-based data retrieval
+        - DNA to protein translation
+        - Pairwise sequence comparison
+        - Data visualization
+        - Simple web application development with Streamlit
+        """
+    )
