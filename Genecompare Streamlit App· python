@@ -19,7 +19,7 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-from Bio import Entrez, SeqIO, pairwise2
+from Bio import Entrez, SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
@@ -114,31 +114,22 @@ def translate_dna_to_protein(dna_sequence: Seq) -> Seq:
     return protein_sequence
 
 
-def calculate_similarity(seq1: Seq, seq2: Seq) -> float:
-    """
-    Calculate similarity percentage between two protein sequences.
+def calculate_similarity(seq1: Seq, seq2: Seq, max_length: int = 1000) -> float:
+    seq1_text = str(seq1).replace("*", "")[:max_length]
+    seq2_text = str(seq2).replace("*", "")[:max_length]
 
-    This uses a simple global alignment and calculates:
-    similarity = number of matching positions / alignment length * 100
-    """
-    alignments = pairwise2.align.globalxx(seq1, seq2, one_alignment_only=True)
+    shortest_length = min(len(seq1_text), len(seq2_text))
 
-    if not alignments:
+    if shortest_length == 0:
         return 0.0
-
-    aligned_seq1, aligned_seq2, score, start, end = alignments[0]
 
     matches = 0
-    alignment_length = len(aligned_seq1)
 
-    for amino_acid_1, amino_acid_2 in zip(aligned_seq1, aligned_seq2):
-        if amino_acid_1 == amino_acid_2:
+    for index in range(shortest_length):
+        if seq1_text[index] == seq2_text[index]:
             matches += 1
 
-    if alignment_length == 0:
-        return 0.0
-
-    similarity = (matches / alignment_length) * 100
+    similarity = (matches / shortest_length) * 100
     return round(similarity, 2)
 
 
